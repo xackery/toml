@@ -38,6 +38,14 @@ var quotedReplacer = strings.NewReplacer(
 	"\\", "\\\\",
 )
 
+const (
+	// tagComment generates a descriptive comment above an object
+	tagComment = "comment"
+
+	// tagCommented will generate the corresponding comment file, but it will be commented out
+	tagCommented = "commented"
+)
+
 // Encoder controls the encoding of Go values to a TOML document to some
 // io.Writer.
 //
@@ -45,7 +53,8 @@ var quotedReplacer = strings.NewReplacer(
 type Encoder struct {
 	// A single indentation level. By default it is two spaces.
 	Indent string
-
+	// indicates in the line should be generated commented out
+	commented bool
 	// hasWritten is whether we have written any output to w yet.
 	hasWritten bool
 	w          *bufio.Writer
@@ -111,7 +120,7 @@ func (enc *Encoder) encode(key Key, rv reflect.Value) {
 	// Basically, this prevents the encoder for handling these types as
 	// generic structs (or whatever the underlying type of a TextMarshaler is).
 	switch rv.Interface().(type) {
-	case time.Time, TextMarshaler:
+	case time.Time, TextMarshaler, time.Duration:
 		enc.keyEqElement(key, rv)
 		return
 	}
@@ -169,6 +178,10 @@ func (enc *Encoder) eElement(rv reflect.Value) {
 		} else {
 			enc.writeQuoted(string(s))
 		}
+		return
+	case time.Duration:
+		s := v.String()
+		enc.writeQuoted(s)
 		return
 	}
 	switch rv.Kind() {
@@ -245,8 +258,12 @@ func (enc *Encoder) eTable(key Key, rv reflect.Value) {
 		// (The newline isn't written if nothing else has been written though.)
 		enc.newline()
 	}
+	format := "%s[%s]"
+	if enc.commented {
+		format = "#" + format
+	}
 	if len(key) > 0 {
-		enc.wf("%s[%s]", enc.indentStr(key), key.maybeQuotedAll())
+		enc.wf(format, enc.indentStr(key), key.maybeQuotedAll())
 		enc.newline()
 	}
 	enc.eMapOrStruct(key, rv)
@@ -368,6 +385,14 @@ func (enc *Encoder) eStruct(key Key, rv reflect.Value) {
 				continue
 			}
 
+			if s := sft.Tag.Get(tagCommented); s == "true" {
+				enc.commented = true
+				enc.addComment(key.add(keyName), sft.Tag)
+				enc.encode(key.add(keyName), sf)
+				enc.commented = false
+				continue
+			}
+
 			enc.addComment(key.add(keyName), sft.Tag)
 			enc.encode(key.add(keyName), sf)
 		}
@@ -377,7 +402,7 @@ func (enc *Encoder) eStruct(key Key, rv reflect.Value) {
 }
 
 func (enc *Encoder) addComment(key Key, tag reflect.StructTag) {
-	if s := tag.Get("desc"); s != "" {
+	if s := tag.Get(tagComment); s != "" {
 		enc.wf("%s# %s\n", enc.indentStr(key), s)
 		enc.hasWritten = false
 	}
@@ -524,7 +549,11 @@ func (enc *Encoder) keyEqElement(key Key, val reflect.Value) {
 		encPanic(errNoKey)
 	}
 	panicIfInvalidKey(key)
-	enc.wf("%s%s = ", enc.indentStr(key), key.maybeQuoted(len(key)-1))
+	format := "%s%s = "
+	if enc.commented {
+		format = "#" + format
+	}
+	enc.wf(format, enc.indentStr(key), key.maybeQuoted(len(key)-1))
 	enc.eElement(val)
 	enc.newline()
 }
